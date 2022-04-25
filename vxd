@@ -1,0 +1,175 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// ©Vvaz_
+//@version=5
+
+strategy("RVxWAP", "VXD", overlay=true , initial_capital=1000,default_qty_type = strategy.percent_of_equity , default_qty_value=10)
+
+import PineCoders/ConditionalAverages/1 as pc
+
+
+
+// ———————————————————— Constants and Inputs {
+
+int MS_IN_MIN   = 60 * 1000
+int MS_IN_HOUR  = MS_IN_MIN  * 60
+int MS_IN_DAY   = MS_IN_HOUR * 24
+
+var string TT_WINDOW = "By default, the time period used to calculate the RVWAP automatically adjusts with the chart's timeframe. Check this to use a fixed-size time period instead, which you define with the following three values."
+var string TT_MINBARS = "The minimum number of last values to keep in the moving window, even if these values are outside the time period. This avoids situations where a large time gap between two bars would cause the time window to be empty."
+
+float srcInput        = input.source(hlc3, "Source", tooltip = "The source used to calculate the VWAP. The default is the average of the high, low and close prices.")
+
+var string GRP2       = '═══════════   Time Period   ═══════════'
+bool fixedTfInput     = input.bool(false, "Use a fixed time period", group = GRP2, tooltip = TT_WINDOW)
+int  daysInput        = input.int(1, "Days", 0, 90, group = GRP2) * MS_IN_DAY
+int  hoursInput       = input.int(0, "Hours", 0, 23, group = GRP2) * MS_IN_HOUR
+int  minsInput        = input.int(0, "Minutes", 0, 59, group = GRP2) * MS_IN_MIN
+bool tableInput       = input.bool(false, "Show time period", group = GRP2, tooltip = "Displays the time period of the rolling window.")
+string textSizeInput  = input.string("large", "Text size", group = GRP2, options = ["tiny", "small", "normal", "large", "huge", "auto"])
+string tableYposInput = input.string("bottom", "Position     ", inline = "21", group = GRP2, options = ["top", "middle", "bottom"])
+string tableXposInput = input.string("right", "", inline = "21", group = GRP2, options = ["left", "center", "right"])
+
+var string GRP3       = '════════ Minimum Window Size ════════'
+int  minBarsInput     = input.int(10, "Bars", group = GRP3, tooltip = TT_MINBARS)
+exaft = input.int(10, 'Exit after ... Bars', minval=1, group = GRP3)
+// }
+
+
+
+// ———————————————————— Functions {
+
+timeStep() =>
+    // @function    Determines a time period from the chart's timeframe.
+    // @returns     (int) A value of time in milliseconds that is appropriate for the current chart timeframe. To be used in the RVWAP calculation.
+    int tfInMs = timeframe.in_seconds() * 1000
+    float step =
+      switch
+        tfInMs <= MS_IN_MIN        => MS_IN_HOUR
+        tfInMs <= MS_IN_MIN * 5    => MS_IN_HOUR * 4
+        tfInMs <= MS_IN_HOUR       => MS_IN_DAY * 1
+        tfInMs <= MS_IN_HOUR * 4   => MS_IN_DAY * 3
+        tfInMs <= MS_IN_HOUR * 12  => MS_IN_DAY * 7
+        tfInMs <= MS_IN_DAY        => MS_IN_DAY * 30.4375
+        tfInMs <= MS_IN_DAY * 7    => MS_IN_DAY * 90
+        => MS_IN_DAY * 365
+    int result = int(step)
+
+
+tfString(int timeInMs) =>
+    // @function    Produces a string corresponding to the input time in days, hours, and minutes.
+    // @param       (series int) A time value in milliseconds to be converted to a string variable. 
+    // @returns     (string) A string variable reflecting the amount of time from the input time.
+    int s  = timeInMs / 1000
+    int m  = s / 60
+    int h  = m / 60
+    int tm = math.floor(m % 60)
+    int th = math.floor(h % 24)
+    int d  = math.floor(h / 24)
+    string result = 
+      switch
+        d == 30 and th == 10 and tm == 30 => "1M"
+        d == 7  and th == 0  and tm == 0  => "1W"
+        =>
+            string dStr = d  ? str.tostring(d)  + "D "  : ""
+            string hStr = th ? str.tostring(th) + "H "  : ""
+            string mStr = tm ? str.tostring(tm) + "min" : ""
+            dStr + hStr + mStr
+// }
+
+
+
+// ———————————————————— Calculations and Plots {
+
+// Stop the indicator on charts with no volume.
+if barstate.islast and ta.cum(nz(volume)) == 0
+    runtime.error("No volume is provided by the data vendor.")
+
+// RVWAP
+var int timeInMs  = fixedTfInput ? minsInput + hoursInput + daysInput : timeStep()
+float rollingVWAP = pc.totalForTimeWhen(srcInput * volume, timeInMs, true, minBarsInput) / pc.totalForTimeWhen(volume, timeInMs, true, minBarsInput)
+//coloring
+xcross = ta.ema(hlc3, 2)
+bfast = ta.ema(hlc3,55)
+bslow = ta.ema(hlc3,100)
+
+//define
+bull = bfast > bslow
+bear = bfast < bslow
+buy = bull and xcross > rollingVWAP
+sell = bear and xcross < rollingVWAP
+
+//plotEMA
+linecl = buy ? color.green : sell ? color.red : color.yellow
+plot(rollingVWAP, "Rolling VWAP", color=linecl , linewidth=3)
+// Display of time period.
+var table tfDisplay = table.new(tableYposInput + "_" + tableXposInput, 1, 1)
+if tableInput
+    table.cell(tfDisplay, 0, 0, tfString(timeInMs), bgcolor = na, text_color = color.gray, text_size = textSizeInput)
+// }
+
+// Momentum Signal using StochRSI
+var string StoRSI1       = '════════ Momentum Signal using StochRSI ════════'
+plotmm = input(title='Show Long-Short?', defval=true , group = StoRSI1)
+plotmmsm = input.int(title='RSI Smoothing', defval=1, minval=0, maxval=3, group = StoRSI1)
+smoothK = input.int(27, 'StochRSI smooth K', minval=1, group = StoRSI1)
+smoothD = input.int(18, 'StochRSI smooth D', minval=1, group = StoRSI1)
+RSIlen = input.int(42, 'RSI length', minval=1, group = StoRSI1)
+STOlen = input.int(42, 'Stochastic length', minval=1, group = StoRSI1)
+SRsrc = input(close, 'Source for StochasticRSI', group = StoRSI1)
+OSlel = input.float(30, 'Oversold Threshold', minval=0.00, group = StoRSI1)
+OBlel = input.float(70, 'overbought Threshold', minval=0.00, group = StoRSI1)
+rsil = ta.rsi(SRsrc, RSIlen)
+K = ta.sma(ta.stoch(rsil, rsil, rsil, STOlen), smoothK)
+D = ta.sma(K, smoothD)
+
+crossover_1 = ta.crossover(K, D)
+crossover_2 = ta.crossover(K, D)
+iff_1 = D > OSlel and crossover_2 ? 2 : 0
+iff_2 = D < OSlel and crossover_1 ? 4 : iff_1
+buymore = iff_1 + iff_2
+crossunder_1 = ta.crossunder(K, D)
+crossunder_2 = ta.crossunder(K, D)
+iff_3 = D < OBlel and crossunder_2 ? 2 : 0
+iff_4 = D > OBlel and crossunder_1 ? 4 : iff_3
+sellmore = iff_3 + iff_4
+
+//plot momentum
+plotshape(plotmm ? buymore > plotmmsm ? buymore : na : na, 'Long', style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny)
+plotshape(plotmm ? sellmore > plotmmsm ? sellmore : na : na, 'Short', style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny)
+
+// === INPUT BACKTEST RANGE ===
+var string BTR1       = '════════ INPUT BACKTEST RANGE ════════'
+FromYear  = input.int(defval = 2019, title = "From Year", minval = 2009 , group = BTR1)
+FromMonth = input.int(defval = 1, title = "From Month", minval = 1, maxval = 12, group = BTR1)
+FromDay   = input.int(defval = 1, title = "From Day", minval = 1, maxval = 31, group = BTR1)
+ToYear    = input.int(defval = 9999, title = "To Year", minval = 2009, group = BTR1)
+ToMonth   = input.int(defval = 12, title = "To Month", minval = 1, maxval = 12, group = BTR1)
+ToDay     = input.int(defval = 31, title = "To Day", minval = 1, maxval = 31, group = BTR1)
+
+// === FUNCTION EXAMPLE ===
+start     = timestamp(FromYear, FromMonth, FromDay, 00, 00)  // backtest start window
+finish    = timestamp(ToYear, ToMonth, ToDay, 23, 59)        // backtest finish window
+window()  => time >= start and time <= finish ? true : false // create function "within window of time"
+
+//stratgy excuter
+//condition
+buycon1 = buymore > plotmmsm
+sellcon1 = sellmore > plotmmsm
+buycon2 = rsil < 70
+sellcon2 = rsil > 30
+//comfirm
+buyfirm = buycon1 and buycon2
+sellfirm = sellcon1 and sellcon2
+
+//Long
+strategy.entry('Long', strategy.long, when = buyfirm and window()  , comment='Buy', alert_message='Buy Now!')
+strategy.close('Long', when= sellcon1, comment='Exit-B', alert_message='Exit Long')
+//Short
+strategy.entry('Short', strategy.short, when= sellfirm and window() , comment='Sell', alert_message='Sell Now!')
+strategy.close('Short', when= buycon1 , comment='Exit-S', alert_message='Exit Short')
+
+BarsSinceFirstEntry() =>
+    bar_index - strategy.opentrades.entry_bar_index(0)
+
+if BarsSinceFirstEntry() == exaft
+    strategy.close_all(comment='Exit')
